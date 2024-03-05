@@ -1,8 +1,12 @@
+import os
+import sys
+
 import pytest
 from argparse import Namespace
 import numpy as np
 
-from src.batch import Batch
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
+from batch import Batch
 
 """ ====================================== INSTANTIATION ====================================== """
 
