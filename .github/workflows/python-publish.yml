@@ -1,6 +1,4 @@
-"""
-Based on https://github.com/pypa/packaging.python.org/blob/main/source/guides/github-actions-ci-cd-sample/publish-to-test-pypi.yml
-"""
+# Based on https://github.com/pypa/packaging.python.org/blob/main/source/guides/github-actions-ci-cd-sample/publish-to-test-pypi.yml
 
 name: Publish Python 🐍 distribution 📦 to PyPI and TestPyPI
 
