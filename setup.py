@@ -22,7 +22,7 @@ def get_version():
 
 
 setup(
-    name="batch",  # Required https://packaging.python.org/specifications/core-metadata/#name
+    name="batch-dev",  # Required https://packaging.python.org/specifications/core-metadata/#name
     version=get_version(),  # Required https://packaging.python.org/en/latest/single_source_version.html
     description="Generic python module for handling dictionary-based batch data",  # Optional
     long_description=long_description,  # Optional
