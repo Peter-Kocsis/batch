@@ -357,7 +357,7 @@ class Batch(Mapping):
         if isinstance(query, str):
             query = [query]
 
-        queried_keys = [k for q in query for k in fnmatch.filter(self.keys(recursive=True), q)]
+        queried_keys = [k for q in query for k in fnmatch.filter(self.keys(depth=-1), q)]
         return self[queried_keys]
 
     def __setitem__(self, index_or_key, value):
