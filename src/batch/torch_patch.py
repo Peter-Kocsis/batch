@@ -11,6 +11,6 @@ try:
                         for key in vars(elem) if not key.startswith("_")})
 
 
-    default_collate_fn_map[Batch] = default_collate_fn_map
+    default_collate_fn_map[Batch] = collate_batch_fn
 except ImportError:
     pass
