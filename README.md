@@ -69,7 +69,7 @@ batch = batch.max()
 
 # Installation
 ```
-pip install batch
+pip install batch-dev
 ```
 
 # Usage
