@@ -362,16 +362,19 @@ class Batch(Mapping, dict):
         elif isinstance(index_or_key, (tuple, list)):
             if len(index_or_key) == 0:
                 return Batch()
-            assert all(type(index_or_key[0]) == type(idx) for idx in index_or_key), f"All indices must be of the same type, but are {index_or_key}"
-            if isinstance(index_or_key[0], int):
+            if all(type(index_or_key[0]) == type(idx) for idx in index_or_key):
+                if isinstance(index_or_key[0], int):
+                    return self._getitem_index(index=index_or_key)
+                elif isinstance(index_or_key[0], str):
+                    other = Batch()
+                    for key in index_or_key:
+                        other[key] = self._getitem_key(key=key)
+                    return other
+                else:
+                    raise NotImplementedError(f"Index type {type(index_or_key[0])} in {type(index_or_key)} not supported")
+            else: # If not all indices are of the same type, then we assume that the indices are slices or integers
+                assert all(isinstance(idx, (int, slice)) for idx in index_or_key), "Only slices and integers are supported"
                 return self._getitem_index(index=index_or_key)
-            elif isinstance(index_or_key[0], str):
-                other = Batch()
-                for key in index_or_key:
-                    other[key] = self._getitem_key(key=key)
-                return other
-            else:
-                raise NotImplementedError(f"Index type {type(index_or_key[0])} in {type(index_or_key)} not supported")
         else:
             raise NotImplementedError(f"Index type {type(index_or_key)} not supported")
 
