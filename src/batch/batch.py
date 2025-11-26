@@ -6,24 +6,27 @@ from typing import Mapping, Union
 from .utils import split_list
 
 
-class Batch(Mapping):
+class Batch(Mapping, dict):
     """
     Generic class implementing a batch as a dictionary of objects.
     It supports every member functions of the underlying objects.
+    Calling a member function of the batch will apply it to all members
     """
     INTERNAL_MEMBER_PREFIX = "_Batch"
+    RECURSIVE_SEPARATOR = "/"
 
     """ ====================================== INSTANTIATE ====================================== """
 
-    def __init__(self, *args, default=None, **kwargs):
+    def __init__(self, *args, default=None, recursive_separator=RECURSIVE_SEPARATOR, **kwargs):
         """
         Constructing a new batch.
         :param args: Batch elements as dictionary
         :param default: Default value constructor if a key is not found. Otherwise a KeyError is raised.
         :param kwargs: Batch elements as keyword arguments
         """
-        super().__init__()
+        super(Batch, self).__init__()
         self.__default = default
+        self.__recursive_separator = recursive_separator
         self.__dict__.update(**kwargs)
         self.__in_place = False
 
@@ -55,7 +58,17 @@ class Batch(Mapping):
             setattr(Batch, name, make_func(name, in_place=True))
 
         # Batchify recursively
-        self._batchify()
+        self.batchify()
+
+    def batchify(self):
+        """
+        Converts all members into batches
+        :return: The batchified batch
+        """
+        for key in self.keys():
+            if isinstance(self[key], dict):
+                self[key] = Batch(self[key])
+        return self
 
     @classmethod
     def from_dict(cls, data):
@@ -71,6 +84,7 @@ class Batch(Mapping):
             else:
                 other[key] = value
         return other
+
 
     @classmethod
     def from_tensor(cls, data, cat_map, dim=0, split_fn=split_list):
@@ -99,7 +113,7 @@ class Batch(Mapping):
         """
         other = cls()
 
-        batch_args = [arg for arg in list(args)]
+        batch_args = list(args)
         all_keys = {key for batch_arg in batch_args for key in batch_arg.keys()}
 
         for key in all_keys:
@@ -129,7 +143,7 @@ class Batch(Mapping):
 
     """ ====================================== PROCESSING ====================================== """
 
-    def map(self, fn, *args, **kwargs):
+    def map(self, fn, on_failure="skip", *args, **kwargs):
         """
         Applies a function to all members of the batch
         :param fn: Function to be applied
@@ -140,7 +154,17 @@ class Batch(Mapping):
             if isinstance(self[key], Batch):
                 other[key] = self[key].map(fn, *args, **kwargs)
             else:
-                other[key] = fn(self[key], *args, **kwargs)
+                try:
+                    other[key] = fn(self[key], *args, **kwargs)
+                except Exception as e:
+                    if on_failure == "skip":
+                        warnings.warn(f"Failed to apply function {fn} to {key} - {self[key]}: {e}")
+                    elif on_failure == "raise":
+                        raise e
+                    elif on_failure == "keep":
+                        other[key] = self[key]
+                    else:
+                        raise ValueError(f"Unknown on_failure option {on_failure}")
         return other
 
     def map_keys(self, fn, *args, **kwargs):
@@ -172,7 +196,23 @@ class Batch(Mapping):
                     other[key] = self[key]
         return other
 
-    def flatten(self, separator="."):
+    def copy(self, deep=True):
+        """
+        Creates a deep copy of the batch
+        :return: The created copy
+        """
+        if deep:
+            return copy.deepcopy(self)
+        else:
+            return copy.copy(self)
+
+    def __repr__(self):
+        return f"Batch({list(self.items())})"
+
+    def __str__(self):
+        return f"Batch({list(self.items())})"
+
+    def flatten(self, separator="/"):
         """
         Flattens the batch into a single batch
         :return: The flattened batch
@@ -207,7 +247,20 @@ class Batch(Mapping):
             other[key + postfix] = self[key]
         return other
 
-    def remap(self, mapping):
+    def to_dict(self):
+        """
+        Converts the batch into a dictionary
+        :return: The dictionary
+        """
+        other = dict()
+        for key in self.keys():
+            if isinstance(self[key], Batch):
+                other[key] = self[key].to_dict()
+            else:
+                other[key] = self[key]
+        return other
+
+    def remap(self, mapping, transpose=False):
         """
         Remaps the keys of the batch
         :param mapping: Dictionary of the old and new keys
@@ -215,6 +268,8 @@ class Batch(Mapping):
         """
         other = Batch()
         for old_key, new_key in mapping.items():
+            if transpose:
+                old_key, new_key = new_key, old_key
             assert isinstance(old_key, str), "Only str remapping is allowed!"
             assert isinstance(new_key, str), "Only str remapping is allowed!"
             if old_key in self:
@@ -274,8 +329,19 @@ class Batch(Mapping):
 
     def __contains__(self, key):
         try:
-            return len(self[key]) > 0
+            if key in self.__dict__:
+                return True
+            else:
+                if self.__recursive_separator in key:
+                    root_key, sub_key = key.split(self.__recursive_separator, maxsplit=1)
+                    if root_key in self.__dict__:
+                        return self[root_key].__contains__(sub_key)
+                    else:
+                        return False
+                else:
+                    return False
         except KeyError:
+            del self[key]
             return False
 
     def __getitem__(self, index_or_key):
@@ -296,23 +362,20 @@ class Batch(Mapping):
         elif isinstance(index_or_key, (tuple, list)):
             if len(index_or_key) == 0:
                 return Batch()
-            if all(type(index_or_key[0]) == type(idx) for idx in index_or_key):
-                if isinstance(index_or_key[0], int):
-                    return self._getitem_index(index=index_or_key)
-                elif isinstance(index_or_key[0], str):
-                    other = Batch()
-                    for key in index_or_key:
-                        other[key] = self._getitem_key(key=key)
-                    return other
-                else:
-                    raise NotImplementedError(f"Index type {type(index_or_key[0])} in {type(index_or_key)} not supported")
-            else: # If not all indices are of the same type, then we assume that the indices are slices or integers
-                assert all(isinstance(idx, (int, slice)) for idx in index_or_key), "Only slices and integers are supported"
+            assert all(type(index_or_key[0]) == type(idx) for idx in index_or_key), f"All indices must be of the same type, but are {index_or_key}"
+            if isinstance(index_or_key[0], int):
                 return self._getitem_index(index=index_or_key)
+            elif isinstance(index_or_key[0], str):
+                other = Batch()
+                for key in index_or_key:
+                    other[key] = self._getitem_key(key=key)
+                return other
+            else:
+                raise NotImplementedError(f"Index type {type(index_or_key[0])} in {type(index_or_key)} not supported")
         else:
             raise NotImplementedError(f"Index type {type(index_or_key)} not supported")
 
-    def _getitem_key(self, key: str):
+    def _getitem_key(self, key: str, allow_default=True):
         """
         Gets a member by its name
         :param key: String key
@@ -322,18 +385,19 @@ class Batch(Mapping):
         if key in self.__dict__:
             return self.__dict__.__getitem__(key)
 
-        # Check if the key refers to a subvalue separated by '.' character.
-        if "." in key:
-            root_key, sub_key = key.split(".", maxsplit=1)
+        # Check if the key refers to a subvalue separated by self.__recursive_separator character.
+        if self.__recursive_separator in key:
+            root_key, sub_key = key.split(self.__recursive_separator, maxsplit=1)
             try:
-                return self._getitem_key(key=root_key)[sub_key]
+                return self._getitem_key(key=root_key, allow_default=False)[sub_key]
             except KeyError:
                 pass
 
         # Check if default constructor is given
-        if self.__default is not None:
-            self.__dict__.__setitem__(key, self.__default())
-            return self.__dict__.__getitem__(key)
+        if allow_default:
+            if self.__default is not None:
+                self.__dict__.__setitem__(key, self.__default())
+                return self.__dict__.__getitem__(key)
 
         raise KeyError(f"Key {key} not found in {list(self.keys())}")
 
@@ -374,8 +438,7 @@ class Batch(Mapping):
         elif isinstance(index_or_key, int):
             return self._setitem_index(index=index_or_key, value=value)
         elif isinstance(index_or_key, (tuple, list)):
-            assert all(type(index_or_key[0]) == type(idx) for idx in
-                       index_or_key), f"All indices must be of the same type, but are {index_or_key}"
+            assert all(type(index_or_key[0]) == type(idx) for idx in index_or_key), f"All indices must be of the same type, but are {index_or_key}"
             if isinstance(index_or_key[0], int):
                 return self._setitem_index(index=index_or_key, value=value)
             elif isinstance(index_or_key[0], str):
@@ -394,9 +457,9 @@ class Batch(Mapping):
         :param value: Value to set
         :return: Extracted value
         """
-        # Check if the key refers to a subvalue separated by '.' character.
-        if "." in key:
-            root_key, sub_key = key.split(".", maxsplit=1)
+        # Check if the key refers to a subvalue separated by self.__recursive_separator character.
+        if self.__recursive_separator in key:
+            root_key, sub_key = key.split(self.__recursive_separator, maxsplit=1)
             try:
                 sub_item = self[root_key]
                 if isinstance(sub_item, Batch):
@@ -466,12 +529,36 @@ class Batch(Mapping):
     def pop(self, index):
         return self.__dict__.pop(index)
 
+    def __deepcopy__(self, memo=None):
+        other = Batch()
+        for key in self.keys():
+            other[key] = copy.deepcopy(self[key], memo=memo)
+        return other
+
+    def to_list(self, per_element=False):
+        idx = 0
+        if not per_element:
+            elements = []
+            try:
+                while True:
+                    next_element = self[idx]
+                    if len(next_element) == 0:
+                        break
+                    elements.append(next_element)
+                    idx += 1
+            except IndexError:
+                pass
+        else:
+            elements = list(self.__dict__.values())[3:]  # Filter the built-in elements
+        return elements
+
     def __getstate__(self):
         """
         Serializes the batch
         :return:
         """
-        return self.__dict__
+        state_dict = self.__dict__
+        return state_dict
 
     def __setstate__(self, d):
         """
@@ -481,17 +568,26 @@ class Batch(Mapping):
         """
         self.__dict__ = d
 
-    """ ====================================== INTERNAL PROCESSING ====================================== """
+    def __reduce__(self):
+        """
+        Deserializes the batch - older variant, support python multiprocessing ForkingPickler
+        :param d:
+        :return:
+        """
+        state = self.__getstate__()
+        return (self.__class__, tuple(), state)
 
-    def _batchify(self):
+    def query_wildcard(self, query):
         """
-        Converts all members into batches
-        :return: The batchified batch
+        Query the batch with a wildcard query.
+        :param query: Query string
+        :return: Batch of the results
         """
-        for key in self.keys():
-            if isinstance(self[key], dict):
-                self[key] = Batch(self[key])
-        return self
+        if isinstance(query, str):
+            query = [query]
+
+        queried_keys = [k for q in query for k in fnmatch.filter(self.keys(recursive=True), q)]
+        return self[queried_keys]
 
     """ ====================================== OPERATIONS ====================================== """
 
@@ -504,7 +600,7 @@ class Batch(Mapping):
         :return: Function or attribute value
         """
         try:
-            return super().__getattribute__(name)
+            return super(Batch, self).__getattribute__(name)
         except AttributeError:
             return self._get_member_attribute(name)
 
@@ -529,7 +625,8 @@ class Batch(Mapping):
             if hasattr(attr, name):
                 other.__dict__[key] = getattr(attr, name)
             else:
-                raise AttributeError(f"Member function {name} not implemented for {key} - {type(attr)}")
+                continue
+                # raise AttributeError(f"Member function {name} not implemented for {key} - {type(attr)}")
         return other
 
     def __call__(self, *args, **kwargs):
@@ -550,3 +647,73 @@ class Batch(Mapping):
             kwargs_for_key = {k: val if not isinstance(val, Batch) else val[key] for k, val in kwargs.items()}
             other.__dict__[key] = self.__dict__[key](*args_for_key, **kwargs_for_key)
         return other
+
+    @classmethod
+    def apply(cls, func, *args, **kwargs):
+        """
+        Applies a function to all members
+        :param func: Function to be applied
+        :param args: Arguments of the function
+        :param kwargs: Keyword arguments of the function
+        :return: Batch of the results
+        """
+        other = cls()
+
+        batch_args = [arg for arg in list(args) + list(kwargs.values()) if isinstance(arg, Batch)]
+        assert len(batch_args) > 0, "At least one argument must be a Batch"
+        all_keys = {key for batch_arg in batch_args for key in batch_arg.keys()}
+
+        for key in all_keys:
+            args_for_key = [arg if not isinstance(arg, Batch) else arg[key] for arg in args]
+            kwargs_for_key = {k: val if not isinstance(val, Batch) else val[key] for k, val in kwargs.items()}
+            other.__dict__[key] = func(*args_for_key, **kwargs_for_key)
+        return other
+
+    """ ====================================== SPECIALIZED METHODS ====================================== """
+
+    def collapse(self):
+        """
+        Collapses the batch into a single element.
+        This method requires all members to have the same size.
+        :return: Collapsed value
+        """
+        if len(self) == 0:
+            raise ValueError("Cannot collapse empty batch")
+        else:
+            values = list(self.values())
+            collapsed_value = values[0]
+
+            for value in values[1:]:
+                assert type(collapsed_value) == type(value), f"All members must have the same type, but are {[type(val) for val in values]}"
+
+            if isinstance(collapsed_value, (int, float, str, bool)):
+                if all((value == collapsed_value for value in values[1:])):
+                    return collapsed_value
+                else:
+                    return None
+
+            elif isinstance(collapsed_value, (tuple, list)):
+                for value in values[1:]:
+                    for idx, v in enumerate(value):
+                        if v != collapsed_value[idx]:
+                            collapsed_value[idx] = None
+
+            elif isinstance(collapsed_value, dict):
+                for value in values[1:]:
+                    for key in value.keys():
+                        if value[key] != collapsed_value[key]:
+                            collapsed_value[key] = None
+
+            elif isinstance(collapsed_value, torch.Tensor):
+                for value in values[1:]:
+                    collapsed_value[torch.not_equal(value, collapsed_value)] = None
+
+            elif isinstance(collapsed_value, np.ndarray):
+                for value in values[1:]:
+                    collapsed_value[np.not_equal(value, collapsed_value)] = None
+
+            else:
+                raise NotImplementedError(f"Collapsing not implemented for {type(collapsed_value)}")
+
+            return collapsed_value
+
